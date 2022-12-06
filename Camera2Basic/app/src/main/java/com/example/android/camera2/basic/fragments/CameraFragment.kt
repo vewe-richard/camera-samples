@@ -20,26 +20,17 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Color
 import android.graphics.ImageFormat
-import android.hardware.camera2.CameraCaptureSession
-import android.hardware.camera2.CameraCharacteristics
-import android.hardware.camera2.CameraDevice
-import android.hardware.camera2.CameraManager
-import android.hardware.camera2.CaptureRequest
-import android.hardware.camera2.CaptureResult
-import android.hardware.camera2.DngCreator
-import android.hardware.camera2.TotalCaptureResult
+import android.graphics.PixelFormat
+import android.hardware.camera2.*
 import android.media.Image
+import android.media.Image.Plane
 import android.media.ImageReader
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
-import android.view.LayoutInflater
-import android.view.Surface
-import android.view.SurfaceHolder
-import android.view.View
-import android.view.ViewGroup
+import android.view.*
 import androidx.core.graphics.drawable.toDrawable
 import androidx.exifinterface.media.ExifInterface
 import androidx.fragment.app.Fragment
@@ -48,9 +39,9 @@ import androidx.lifecycle.lifecycleScope
 import androidx.navigation.NavController
 import androidx.navigation.Navigation
 import androidx.navigation.fragment.navArgs
+import com.example.android.camera.utils.OrientationLiveData
 import com.example.android.camera.utils.computeExifOrientation
 import com.example.android.camera.utils.getPreviewOutputSize
-import com.example.android.camera.utils.OrientationLiveData
 import com.example.android.camera2.basic.CameraActivity
 import com.example.android.camera2.basic.R
 import com.example.android.camera2.basic.databinding.FragmentCameraBinding
@@ -62,11 +53,9 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.text.SimpleDateFormat
+import java.util.*
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeoutException
-import java.util.Date
-import java.util.Locale
-import kotlin.RuntimeException
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
@@ -197,14 +186,20 @@ class CameraFragment : Fragment() {
      */
     private fun initializeCamera() = lifecycleScope.launch(Dispatchers.Main) {
         // Open the selected camera
+        var format = ImageFormat()
         camera = openCamera(cameraManager, args.cameraId, cameraHandler)
 
         // Initialize an image reader which will be used to capture still photos
         val size = characteristics.get(
                 CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
                 .getOutputSizes(args.pixelFormat).maxByOrNull { it.height * it.width }!!
+
+        //newInstance w 3264 h 2448 format 256
+        Log.d(TAG, "${format}")
+        Log.d(TAG, "newInstance w ${size.width} h ${size.height} format ${args.pixelFormat}")
         imageReader = ImageReader.newInstance(
-                size.width, size.height, args.pixelFormat, IMAGE_BUFFER_SIZE)
+                size.width, size.height, args.pixelFormat/*ImageFormat.YUV_420_888*//*PixelFormat.RGBA_8888*/, IMAGE_BUFFER_SIZE)
+        //ImageFormat.FLEX_RGBA_8888
 
         // Creates list of Surfaces where the camera will output frames
         val targets = listOf(fragmentCameraBinding.viewFinder.holder.surface, imageReader.surface)
@@ -254,7 +249,7 @@ class CameraFragment : Fragment() {
                 }
 
                 // Re-enable click listener after photo is taken
-                it.post { it.isEnabled = true }
+                // it.post { it.isEnabled = true }
             }
         }
     }
@@ -330,8 +325,24 @@ class CameraFragment : Fragment() {
         // Start a new image queue
         val imageQueue = ArrayBlockingQueue<Image>(IMAGE_BUFFER_SIZE)
         imageReader.setOnImageAvailableListener({ reader ->
+            Log.d(TAG, "w ${reader.width} h ${reader.height}, format ${reader.imageFormat}, ${reader.maxImages}")
             val image = reader.acquireNextImage()
-            Log.d(TAG, "Image available in queue: ${image.timestamp}")
+
+            val planes: Array<Plane> = image.getPlanes()
+            //Log.d(TAG, planes[0].getBuffer().array().toString())
+            Log.d(TAG, image.javaClass.name)
+            Log.d(TAG, planes.toString())
+            Log.d(TAG, planes[0].toString())
+            Log.d(TAG, "position " + planes[0].buffer.position())
+            //Log.d(TAG, "" + planes[0].buffer[0])
+            for (i in 0..8 step 4){
+                Log.d(TAG, "" + i + ":" + "%x".format(planes[0].buffer[i]) + " " +
+                        "%x".format(planes[0].buffer[i+1]) + " "  +
+                        "%x".format(planes[0].buffer[i+2]) + " "  +
+                        "%x".format(planes[0].buffer[i+3]))
+            }
+
+            Log.d(TAG, "Image available in queue: ${image.timestamp} add image " + System.identityHashCode(image))
             imageQueue.add(image)
         }, imageReaderHandler)
 
@@ -374,7 +385,10 @@ class CameraFragment : Fragment() {
                         // if (image.timestamp != resultTimestamp) continue
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
                                 image.format != ImageFormat.DEPTH_JPEG &&
-                                image.timestamp != resultTimestamp) continue
+                                image.timestamp != resultTimestamp){
+                            Log.d("vcam", "image get skip" + image.format + (image.timestamp != resultTimestamp))
+                            //continue
+                        }
                         Log.d(TAG, "Matching image dequeued: ${image.timestamp}")
 
                         // Unset the image reader listener
@@ -392,11 +406,21 @@ class CameraFragment : Fragment() {
                                 CameraCharacteristics.LENS_FACING_FRONT
                         val exifOrientation = computeExifOrientation(rotation, mirrored)
 
+                        val planes: Array<Plane> = image.planes
+                        Log.d(TAG, "after take image jjqzzz from queue " + System.identityHashCode(image) + " planes 0" + System.identityHashCode(image.planes[0].buffer))
+                        for (i in 0..8 step 4){
+                            Log.d(TAG, "" + i + ":" + "%x".format(planes[0].buffer[i]) + " " +
+                                    "%x".format(planes[0].buffer[i+1]) + " "  +
+                                    "%x".format(planes[0].buffer[i+2]) + " "  +
+                                    "%x".format(planes[0].buffer[i+3]))
+                        }
+
                         // Build the result and resume progress
                         cont.resume(CombinedCaptureResult(
                                 image, result, exifOrientation, imageReader.imageFormat))
 
                         // There is no need to break out of the loop, this coroutine will suspend
+                        break
                     }
                 }
             }
@@ -408,11 +432,20 @@ class CameraFragment : Fragment() {
         when (result.format) {
 
             // When the format is JPEG or DEPTH JPEG we can simply save the bytes as-is
-            ImageFormat.JPEG, ImageFormat.DEPTH_JPEG -> {
+            ImageFormat.JPEG, ImageFormat.DEPTH_JPEG, ImageFormat.YUV_420_888 -> {
                 val buffer = result.image.planes[0].buffer
-                val bytes = ByteArray(buffer.remaining()).apply { buffer.get(this) }
+                val pos = buffer.position()
+                val remain = buffer.remaining()
+                val bytes = ByteArray(remain).apply { buffer.get(this) }
                 try {
                     val output = createFile(requireContext(), "jpg")
+                    Log.d(TAG, output.absolutePath)
+                    Log.d(TAG, "size " + remain + " pos " + pos)
+                    Log.d(TAG, "result image to save jiangjqian" + System.identityHashCode(result.image) + " buffer " + System.identityHashCode(result.image.planes[0].buffer))
+                    for (i in 0..8 step 4) {
+                        Log.d(TAG, " %x".format(bytes[i]) + " %x".format(bytes[i+1]) + " %x".format(bytes[i+2]) + " %x".format(bytes[i+3]))
+                        Log.d(TAG, "?%x".format(buffer[i]) + " %x".format(buffer[i+1]) + " %x".format(buffer[i+2]) + " %x".format(buffer[i+3]))
+                    }
                     FileOutputStream(output).use { it.write(bytes) }
                     cont.resume(output)
                 } catch (exc: IOException) {
@@ -467,7 +500,7 @@ class CameraFragment : Fragment() {
         private val TAG = CameraFragment::class.java.simpleName
 
         /** Maximum number of images that will be held in the reader's buffer */
-        private const val IMAGE_BUFFER_SIZE: Int = 3
+        private const val IMAGE_BUFFER_SIZE: Int = 10
 
         /** Maximum time allowed to wait for the result of an image capture */
         private const val IMAGE_CAPTURE_TIMEOUT_MILLIS: Long = 5000
